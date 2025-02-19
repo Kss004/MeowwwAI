@@ -5,40 +5,16 @@ import json
 import base64
 from datetime import datetime
 from conns import *
-from pydantic import BaseModel
 import bson
 from quart_cors import cors
-import requests
-from dataclasses import dataclass
-from typing import Dict, Optional
 from functions import *
-
-@dataclass
-class CallSession:
-    company_name: str
-    company_details: str
-    company_call_agenda: str
-    additional_info: str
-    target_id: str
-    transcript: list
-    call_uuid: Optional[str] = None
-    stream_id: Optional[str] = None
-    websocket_connections: Dict = None
-
-    def __post_init__(self):
-        if self.websocket_connections is None:
-            self.websocket_connections = {}
-
-class data(BaseModel):
-    target_id: str
+from schema import *
 
 with open("prompt.txt", "r") as file:
     prompt = file.read()
 
 app = Quart(__name__)
 app = cors(app, allow_origin="*", allow_headers=["*"], allow_methods=["*"])
-
-active_calls: Dict[str, CallSession] = {}
 
 @app.before_serving
 async def setup_cors():
@@ -110,32 +86,25 @@ async def make_outbound_call():
     request_data = await request.get_json()
     req = data(**request_data)
 
-    screenData = screenings.find_one({"_id": bson.ObjectId(str(req.id))})
-    jobData = jobs.find_one({"_id": bson.ObjectId(str(screenData['jobId']))})
-    
-    questions = []
-    questionsData = jobquestions.find({'jobId': bson.ObjectId(str(screenData['jobId']))})
-    for i in questionsData:
-        questions.append(i['question'])
-
-    companyData = companies.find_one({"_id": bson.ObjectId(str(jobData['companyId']))})
+    targetData = targets.find_one({"_id": bson.ObjectId(str(req.target_id))})
+    orgData = organizations.find_one({"_id": bson.ObjectId(str(targetData['jobId']))})
 
     call_session = CallSession(
-        candidate_name=req.name,
-        role=jobData['title'],
-        jd=jobData['jobDescription'],
-        company=companyData['name'],
-        additional_info=f"About the company: {companyData['aboutUs']}",
-        questions=questions,
-        screening_id=req.id,
+        target_id = req.target_id,
+        target_name = targetData['target_name'],
+        target_details = targetData['target_details'],
+        target_call_agenda = targetData['target_call_agenda'],
+        target_extra_details = targetData["target_extra_details"],
+        org_name = orgData['org_name'],
+        org_about = orgData['org_about'],
         transcript=[]
     )
 
-    call_id = f"call_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{req.id}"
+    call_id = f"call_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{req.target_id}"
     
     call_response = plivo_client.calls.create(
         from_=NUMBER,
-        to_="91"+str(req.phone)[-10:],
+        to_="91"+str(targets['target_phone'])[-10:],
         answer_url=f"https://8159-115-245-68-163.ngrok-free.app/webhook/{call_id}",
         answer_method='GET',
     )
@@ -288,36 +257,36 @@ async def receive_from_deepgram(message, call_session: CallSession):
                     print(functionCallResponse)
                     await deepgram_ws.send(json.dumps(functionCallResponse))
 
-                elif response['function_name'] == 'rescheduleInterview':
-                    params = response.get('input', {})
-                    preferred_date = params.get('preferred_date')
-                    preferred_time = params.get('preferred_time')
-                    reason = params.get('reason', 'Candidate requested reschedule')
+                # elif response['function_name'] == 'rescheduleInterview':
+                #     params = response.get('input', {})
+                #     preferred_date = params.get('preferred_date')
+                #     preferred_time = params.get('preferred_time')
+                #     reason = params.get('reason', 'Candidate requested reschedule')
 
-                    if not preferred_date or not preferred_time:
-                        functionCallResponse = {
-                            "type": "FunctionCallResponse",
-                            "function_call_id": response['function_call_id'],
-                            "output": "Missing required parameters for rescheduling. Please provide both date and time."
-                        }
-                    else:
-                        result = reschedule_interview(
-                            call_session.screening_id,
-                            preferred_date,
-                            preferred_time,
-                            reason
-                        )
-                        print(result)
-                        functionCallResponse = {
-                            "type": "FunctionCallResponse",
-                            "function_call_id": response['function_call_id'],
-                            "output": result["status"]
-                        }
+                #     if not preferred_date or not preferred_time:
+                #         functionCallResponse = {
+                #             "type": "FunctionCallResponse",
+                #             "function_call_id": response['function_call_id'],
+                #             "output": "Missing required parameters for rescheduling. Please provide both date and time."
+                #         }
+                #     else:
+                #         result = reschedule_interview(
+                #             call_session.screening_id,
+                #             preferred_date,
+                #             preferred_time,
+                #             reason
+                #         )
+                #         print(result)
+                #         functionCallResponse = {
+                #             "type": "FunctionCallResponse",
+                #             "function_call_id": response['function_call_id'],
+                #             "output": result["status"]
+                #         }
                     
-                    print(functionCallResponse)
-                    await deepgram_ws.send(json.dumps(functionCallResponse))
+                #     print(functionCallResponse)
+                #     await deepgram_ws.send(json.dumps(functionCallResponse))
             
-            if response["type"] == 'AgentStartedSpeaking':
+            elif response["type"] == 'AgentStartedSpeaking':
                 print(f"Agent speaking for call {call_session.screening_id}")
                 
         else:
@@ -334,10 +303,10 @@ async def receive_from_deepgram(message, call_session: CallSession):
     except Exception as e:
         print(f"Error in Deepgram communication: {e}")
 
-current_datetime = datetime.now().strftime("%Y-%m-%d %H:%M:%S IST")
 
 async def send_session_update(call_session: CallSession):
     deepgram_ws = call_session.websocket_connections['deepgram']
+    # current_datetime = datetime.now().strftime("%Y-%m-%d %H:%M:%S IST")
 
     session_update = {
             "type": "SettingsConfiguration",
@@ -354,7 +323,7 @@ async def send_session_update(call_session: CallSession):
             },
             "agent": {
                 "listen": {
-                    "model": "nova-2"
+                    "model": "nova-3"
                 },
                 "think": {
                     "provider": {
@@ -362,12 +331,12 @@ async def send_session_update(call_session: CallSession):
                     },
                     "model": "gpt-4o-mini",
                     "instructions": prompt.format(
-                        name=call_session.candidate_name,
-                        role=call_session.role,
-                        jd=call_session.jd,
-                        info=call_session.additional_info,
-                        company=call_session.company,
-                        questions=call_session.questions
+                        target_name=call_session.target_name,
+                        target_details=call_session.target_details,
+                        target_call_agenda=call_session.target_call_agenda,
+                        target_extra_details=call_session.target_extra_details,
+                        org_name=call_session.org_name,
+                        org_about=call_session.org_about
                     ).strip(),
                     "functions": [
                         {
@@ -385,28 +354,28 @@ async def send_session_update(call_session: CallSession):
                                 "required": ["reason"]
                             }
                         },
-                        {
-                            "name": "rescheduleInterview",
-                            "description": f"""Reschedule the interview for a new time slot. Time should be in IST. The date and time right now is: {current_datetime}, use this without asking the user about tomrrow's date if they ask to reschedule the call tomorrow. Also dont ask the time zone, silently take it as IST""",
-                            "parameters": {
-                                "type": "object",
-                                "properties": {
-                                    "preferred_date": {
-                                        "type": "string",
-                                        "description": "The preferred date in YYYY-MM-DD format"
-                                    },
-                                    "preferred_time": {
-                                        "type": "string",
-                                        "description": "The preferred time in 24-hour HH:mm format (IST)"
-                                    },
-                                    "reason": {
-                                        "type": "string",
-                                        "description": "Reason for rescheduling"
-                                    }
-                                },
-                                "required": ["preferred_date", "preferred_time", "reason"]
-                            }
-                        }
+                        # {
+                        #     "name": "rescheduleInterview",
+                        #     "description": f"""Reschedule the interview for a new time slot. Time should be in IST. The date and time right now is: {current_datetime}, use this without asking the user about tomrrow's date if they ask to reschedule the call tomorrow. Also dont ask the time zone, silently take it as IST""",
+                        #     "parameters": {
+                        #         "type": "object",
+                        #         "properties": {
+                        #             "preferred_date": {
+                        #                 "type": "string",
+                        #                 "description": "The preferred date in YYYY-MM-DD format"
+                        #             },
+                        #             "preferred_time": {
+                        #                 "type": "string",
+                        #                 "description": "The preferred time in 24-hour HH:mm format (IST)"
+                        #             },
+                        #             "reason": {
+                        #                 "type": "string",
+                        #                 "description": "Reason for rescheduling"
+                        #             }
+                        #         },
+                        #         "required": ["preferred_date", "preferred_time", "reason"]
+                        #     }
+                        # }
                     ]
                 },
                 "speak": {
@@ -416,7 +385,7 @@ async def send_session_update(call_session: CallSession):
             "context": {
                 "messages": [
                     {
-                        "content": f"Hello, this is Reva from {call_session.company}. I have called you for a job interview. Am I talking to {call_session.candidate_name}?",
+                        "content": f"Hi, this is Medu from {call_session.org_name}. I have called you for a free consultation for your company. Am I talking with someone from {call_session.target_name}?",
                         "role": "user"
                     }
                 ],
@@ -424,23 +393,6 @@ async def send_session_update(call_session: CallSession):
             }
         }
     await deepgram_ws.send(json.dumps(session_update))
-
-async def save_transcript(call_session: CallSession):
-    try:
-        if call_session.transcript:
-            payload = {
-                'screeningConversation': call_session.transcript
-            }
-            
-            url = f'https://devnodeapi.hyrgpt.com/v1/screening-status/{call_session.screening_id}'
-            response = requests.patch(url, json=payload)
-            
-            if response.status_code == 200:
-                print(f"Transcript saved for screening ID: {call_session.screening_id}")
-            else:
-                print(f"Error saving transcript. Status code: {response.status_code}")
-    except Exception as e:
-        print(f"Error saving transcript: {e}")
 
 
 if __name__ == "__main__":

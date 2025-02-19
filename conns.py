@@ -8,10 +8,10 @@ with open("config.json", "r") as f:
 
 mongo_client = pymongo.MongoClient(config["mongodb"]["url"], tlsCAFile=certifi.where())
 db_name = mongo_client[config["mongodb"]["dbName"]]
-screenings = db_name['screenings']
-jobs = db_name['jobs']
-jobquestions = db_name['jobquestions']
-companies = db_name['companies']
+
+organizations = db_name['organizations']
+target_transcripts = db_name['target_transcripts']
+targets = db_name['targets']
 
 NUMBER = config['PLIVO_NUMBER']
 DEEPGRAM_API_KEY = config['DEEPGRAM_API_KEY']
