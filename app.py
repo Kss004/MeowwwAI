@@ -287,7 +287,7 @@ async def receive_from_deepgram(message, call_session: CallSession):
                 #     await deepgram_ws.send(json.dumps(functionCallResponse))
             
             elif response["type"] == 'AgentStartedSpeaking':
-                print(f"Agent speaking for call {call_session.screening_id}")
+                print(f"Agent speaking for call {call_session.target_id}")
                 
         else:
             audioDelta = {
